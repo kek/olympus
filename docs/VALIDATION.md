@@ -94,3 +94,30 @@ per-call elapsed time, distinguishing unavailable/interrupted usage from zero.
 Then run multiple tasks and repetitions against an explicit baseline with matched
 resource limits. These experiments alone support no claim about defect rates,
 relative cost, latency improvements or downstream usefulness.
+
+## Follow-up: metered native Codex smoke run
+
+A fresh sum-of-integers contest used the same native Codex provider/model and
+Docker confinement, with the new separate usage channel. Both proposals and both
+reviews returned SDK usage: four recorded adapter invocations, complete recorded
+coverage, no adapter errors and no reported output overruns. Ares won; its patch
+passed the sealed cases and independent Fate rerun.
+
+The SDK-reported subtotal was:
+- `input`: 4,993
+- `output`: 80
+- `cacheRead`: 0
+- `cacheWrite`: 0
+- `totalTokens`: 5,073
+
+Summed adapter elapsed time was 11,727 ms, including subprocess startup and
+authentication. This is not whole-contest latency: concurrent invocation times
+overlap. These are SDK reports, not independently measured tokens or a billing
+amount. No monetary cost was inferred.
+
+Local artifacts: `var/live-codex-metered-1/` (journal, usage summary, winning patch
+and evaluator evidence). The original experiments' actual usage cannot be
+retrofitted from their reserved allowances.
+
+This smoke test validates the accounting path. It is still not a matched-budget
+comparison, and establishes no quality or efficiency advantage from rivalry.

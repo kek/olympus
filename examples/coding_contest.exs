@@ -95,7 +95,14 @@ if result.status == :harmonious do
     Olympus.JSON.encode(result.artifact["evaluation"])
   )
 
-  IO.puts("#{result.winner} won. Patch: #{output}/patch.diff; evidence: #{output}/evidence.json")
+  File.write!(
+    Path.join(output, "usage.json"),
+    Olympus.JSON.encode(Olympus.Usage.summarize(result))
+  )
+
+  IO.puts(
+    "#{result.winner} won. Patch: #{output}/patch.diff; evidence: #{output}/evidence.json; usage: #{output}/usage.json"
+  )
 else
   IO.puts("Fate cut the contest; no patch was promoted.")
 end

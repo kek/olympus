@@ -313,6 +313,47 @@ The final selected replacement bytes still undergo a completely fresh independen
 evaluation before settlement. The repair loop does not merge, deploy, introduce
 model-selected tests, or give either gods or humans an override.
 
+## Non-authoritative usage and timing
+
+`Adapter.invoke/3` is the trusted boundary for invocation timing. Legacy
+`respond/2` adapters remain compatible. An optional `respond_with_usage/2`
+returns metadata as a separate tuple element; the Pi bridge obtains it from the
+completed SDK assistant message, outside the model-generated text. The public Pi
+`respond/2` API still returns its original two-element success/error tuples.
+
+Only provider/model labels and the five nonnegative, safe-integer Pi SDK token
+counters are accepted. Costs, headers, raw errors and arbitrary metadata are
+discarded. SDK counters are emitted only when complete and nonzero; initialized
+zero-filled usage is conservatively unavailable. Model-authored usage and audit
+fields cannot overwrite authority-owned call records.
+
+Coding search checkpoints completed invocation metadata before starting evaluation,
+so a later evaluator timeout retains known model consumption. A model call killed
+before its reply has unknown usage. Failed JSON or over-allowance completions can
+still retain available provider counters. Plain proposals and enemy reviews use
+the same boundary; generated artifacts never contain authoritative telemetry.
+
+`Usage.summarize/1` enumerates audited proposal/repair and review slots. It reports
+known subtotals and coverage separately. Missing historical records, skipped or
+interrupted slots, and provider omissions are not converted to zero. Empty
+restart-cut episodes cannot establish zero consumption. The sum of adapter elapsed
+times includes startup/authentication and may exceed contest wall time because
+contenders run concurrently. It is not model-only latency or evaluator time.
+
+This is additive accounting, excluded from scoring, oath predicates, favor,
+reservation allocation and model context. It introduces no billing claims or
+remote hard cap for native Codex. A future matched-budget strategy benchmark must
+account for incomplete coverage, cached-token semantics, failures and repetitions
+rather than compare reserved allowances as if they were measured consumption.
+
+Docker Desktop workspace preparation now removes stale children while preserving
+the private owner-root inode. Deleting and immediately recreating that parent can
+leave Desktop bind sharing with a stale path, causing an infrastructure failure.
+Before reuse, an O_NOFOLLOW directory descriptor verifies ownership, and private
+0700 permissions are enforced before traversing stale entries. Foreign-owned or
+symlink roots are rejected; evaluation rechecks ownership and mode. No retry or
+weaker mount policy is used to hide a mount failure.
+
 ## Verification and roadmap
 
 Tests cover contract seals, typed predicates, missing paths, invalid schemas,

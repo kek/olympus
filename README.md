@@ -48,6 +48,7 @@ Outputs:
 
 - `var/winner/patch.diff` — unified patch against the sealed base revision.
 - `var/winner/evidence.json` — measured cases, hashes and container image ID.
+- `var/winner/usage.json` — call/usage summary with explicit coverage.
 - `var/coding.journal` — durable settlement, baseline and acceptance snapshots.
 
 To use actual Pi models instead of the offline contenders, install the Pi
@@ -170,6 +171,57 @@ evaluation. No merge or deployment is added.
 
 `OLYMPUS_OUTPUT_DIR` changes the example's export directory (default
 `var/winner`), so demonstrations need not replace a previous winner export.
+
+### Usage accounting
+
+```elixir
+{:ok, summary} = Olympus.usage(realm, "your-episode-id")
+# Or, with a returned result:
+Olympus.Usage.summarize(result)
+```
+
+The Pi adapter records SDK-reported token counters separately from model-authored
+JSON. Each completed adapter invocation also records its selected provider/model,
+completion allowance, status and monotonic elapsed time. Coding attempts store
+this under `attempts[].call`; ordinary proposals and reviews use `candidate.call`
+and `candidate.review.call`. These records never enter model prompts and never
+change acceptance, favor or reservations.
+
+Summary fields include:
+- `recorded_adapter_calls`: invocations with completed call metadata, not a claim
+  about every HTTP request a custom adapter might make.
+- `usage_known_calls`, `usage_unknown_calls`, `unmeasured_slots`,
+  `usage_complete`: coverage, including interrupted or historical slots.
+- `reported_usage_subtotal`: only known Pi SDK counters (`input`, `output`,
+  `cacheRead`, `cacheWrite`, `totalTokens`); null when none are known.
+- `adapter_elapsed_ms_sum`: summed invocation wall time, including subprocess
+  startup/authentication, excluding evaluation. Concurrent calls can make this
+  exceed whole-contest latency.
+- `error_calls`: adapter errors, including rejected provider output.
+- `reported_output_over_allowance_calls`: observed completion overruns.
+
+Missing or all-zero SDK usage is conservatively unknown, not inferred zero.
+Individual zero cache counters remain valid inside a nonzero report. Subtotals
+are partial unless coverage is complete. Unmeasured slots may not have started,
+or may have consumed provider resources before interruption. An authority crash
+can lose uncommitted metadata; zero recorded calls does not prove zero execution.
+
+Usage retains SDK cache-token semantics; do not reconstruct totals or costs by
+assuming all providers price cached input identically. No monetary cost estimate,
+billing data, headers, credentials or raw provider errors are exported.
+Provider/adapter reports are trusted telemetry, not independently measured billing.
+
+Legacy adapters keep `respond/2` unchanged and receive timing with unknown token
+usage. A trusted adapter can optionally implement `respond_with_usage/2`,
+returning `{:ok, value, metadata}` or `{:error, reason, metadata}`. Supported
+metadata is a string-keyed map with `provider`, `model`,
+`usage_format: "pi-sdk"` and `usage` containing all five integer counters above.
+Unknown fields are discarded; metadata must come from the provider boundary,
+not the generated JSON. Direct Pi `respond/2` callers remain compatible.
+
+A metered native Codex smoke run is recorded in
+[the validation report](docs/VALIDATION.md). It validates collection, not an
+advantage over a single-agent baseline.
 
 ### Coding verification
 
