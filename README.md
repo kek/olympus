@@ -4,9 +4,10 @@ An Elixir/OTP orchestration kernel where rivalry changes resource allocation.
 Fate is autonomous: there is no human approval, override, force-merge, test-edit,
 or favor-edit operation.
 
-**Status:** runnable first vertical slice: bounded JSON-artifact tournaments.
-This is not yet a general-purpose coding agent, repository merger, or deployment
-system. The architecture deliberately separates those future effects from judgment.
+**Status:** JSON-artifact tournaments and isolated coding contests for small CLI
+programs. Coding mode returns an independently tested patch and evidence; it never
+merges or deploys. General-purpose repository agents and in-process unit-test
+frameworks are not supported yet.
 
 ## Run
 
@@ -21,6 +22,105 @@ mix run examples/contest.exs
 The demo persists to `var/demo.journal`. Running it again replays the settled
 episode instead of spending its budget twice. Set `OLYMPUS_JOURNAL` to another
 path to create a separate realm.
+
+## Coding contest
+
+Requires **Linux, a local Podman engine with cgroup limits, Python 3.10+, Git and
+Jujutsu**, in addition to Elixir/OTP. No runtime image is pulled automatically:
+
+```sh
+podman pull docker.io/library/python:3.12-alpine
+mix run examples/coding_contest.exs
+```
+
+This offline example creates a tiny throwaway repository under `var/coding-source`.
+Athena and Ares propose replacements for `main.py`; independent containers run
+the fixed sum-of-integers cases. Fate reruns the winner in fresh containers.
+Outputs:
+
+- `var/winner/patch.diff` — unified patch against the sealed base revision.
+- `var/winner/evidence.json` — measured cases, hashes and container image ID.
+- `var/coding.journal` — durable settlement, baseline and acceptance snapshots.
+
+To use actual Pi models instead of the offline contenders, install the Pi
+dependencies below, set `OLYMPUS_PI_PROVIDER` and `OLYMPUS_PI_MODEL`, and run the
+same example with a **new journal path**:
+
+```sh
+OLYMPUS_JOURNAL=var/pi-coding.journal mix run examples/coding_contest.exs
+```
+
+This makes provider calls. Reusing a settled journal/task ID replays its result.
+
+For your own task, configure a realm with `coding:`:
+
+```elixir
+coding: [
+  repository: "/absolute/path/to/repository",
+  revision: "immutable-commit-or-jj-revision",
+  source_files: ["src/main.py"], # optional exact exported files; otherwise all tracked files
+  editable: ["src/main.py"],    # exact paths, no globs
+  fixtures: "/private/path/to/cases.json",
+  image: "docker.io/library/python:3.12-alpine",
+  command: ["python3", "-I", "-B", "/candidate/src/main.py"],
+  case_timeout_ms: 3_000
+]
+```
+
+The fixture format is a JSON array:
+
+```json
+[
+  {"stdin": "1 2\\n", "stdout": "3\\n", "exit_code": 0},
+  {"stdin": "-3 1 8\\n", "stdout": "6\\n", "exit_code": 0}
+]
+```
+
+Configure acceptance before submission. The profile is sealed into each task:
+resolved commit, source bytes/modes, image ID/platform, test corpus, command,
+environment, limits and evaluator implementation hash. Fixtures never enter the
+candidate container or model prompt. Keep them outside exported source paths.
+
+In coding mode, proposals contain only
+`{"files":{"editable/path":"complete replacement text"}}`.
+Olympus applies those bytes itself to separate private workspaces. Models do not
+receive shell/edit tools, container sockets, credentials or acceptance files.
+Submitted evaluation claims are rejected. Missing or failed acceptance always
+blocks harmony, even if the prayer's ordinary checks would pass.
+
+Use checks over `["evaluation", "passed"]` and, optionally, minimize
+`["evaluation", "patch_bytes"]`. See the runnable example for a complete prayer.
+Only successful CLI exits (`exit_code: 0`) and exact UTF-8 stdout matching are
+supported. This does **not** safely run pytest/ExUnit/npm-test assertions inside
+the candidate's process: hostile candidate code could fake those results.
+
+Bounds: up to 64 source files / 256 KiB, 16 editable paths / 32 KiB replacement
+text, 8 cases, 8 KiB input or expected output per case, 8 KiB combined observed
+stdout/stderr, 100–10,000 ms per case. Containers use no network, read-only
+root/source, unprivileged UID, no capabilities, no new privileges, one CPU,
+256 MiB memory, 64 PIDs, and a 16 MiB temporary filesystem. New files are mode
+0644; existing Git executable bits are preserved. Binary files, symlinks,
+submodules, LFS pointers, deletions and mode-only edits are unsupported.
+
+The journal archives acceptance cases and source; keep it private. Replays use
+recorded decisions without rerunning code. A restart cuts unfinished epochs,
+reaps realm-labeled orphan containers and removes stale workspaces. Engine-level
+timeouts also bound orphan container lifetimes. Container confinement assumes a
+trusted engine/image/kernel; it is not a VM security boundary. Remote Podman
+engines and host-repository edits are unsupported.
+
+### Coding verification
+
+```sh
+OLYMPUS_CONTAINER_TESTS=1 mix test
+python3 -B -m unittest discover -s priv/coding -p 'test_*.py'
+# Optional: full real-Pi-SDK → local mock provider → container → Fate integration:
+OLYMPUS_CONTAINER_TESTS=1 npm test --prefix priv/pi
+```
+
+Plain `mix test` excludes container-dependent tests. The integration suite
+requires the image above and verifies containment, spoofing resistance, patch
+fidelity, cancellation, winner reruns and recovery. No paid credentials are needed.
 
 ## Use
 
@@ -190,8 +290,7 @@ the running system. BEAM processes and hash chains are not a security boundary
 against the host, malicious adapter code, or hostile processes in the same VM.
 Model output is untrusted data; adapter implementations are trusted code.
 
-This release verifies JSON data, not the truth of self-reported benchmarks.
-A cost field is an objective value, not an independently measured runtime.
-Production code execution requires an isolated evaluator and externally measured
-evidence. See [the architecture](docs/ARCHITECTURE.md) for the design, recovery
-semantics and remaining work.
+Plain artifact mode still does not verify self-reported costs or benchmarks.
+Coding mode independently measures sealed CLI acceptance cases and patch bytes;
+passing a finite case corpus does not prove general correctness. See
+[the architecture](docs/ARCHITECTURE.md) for recovery semantics and remaining work.

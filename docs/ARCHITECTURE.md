@@ -183,7 +183,75 @@ The adapter starts a fresh process per invocation, so SDK startup overhead count
 against the whole-contest deadline. No durable Pi sessions are stored; ambrosia
 remains Fate-owned. Tests exercise the real SDK through a loopback compatible
 provider, including the complete Elixir subprocess path, without live credentials.
-This is still not an execution sandbox for repository-editing agents.
+Coding mode adds source context and asks Pi for exact file replacements rather
+than enabling tools. The authority applies those replacements itself; arbitrary
+repository-editing agents still do not run inside the authority VM.
+
+## Isolated coding workflow
+
+A realm can hold a prepared coding profile. Preparation resolves a Jujutsu
+revision to an immutable Git commit without snapshotting or mutating the user's
+worktree. Read-only Git object plumbing exports bounded text files without hooks,
+checkout filters, VCS metadata, submodules, symlinks or LFS materialization.
+Original regular/executable Git modes are retained. Explicit `source_files` can
+reduce the export; all tracked files are the default.
+
+The profile snapshots a closed JSON corpus of stdin / expected stdout / successful
+exit cases. Acceptance files are not mounted into candidate containers and are
+never included in model context. This is a black-box evaluator, not an in-process
+test framework. A test runner importing adversarial code would share its
+privileges: code could exit zero, replace assertions or spoof reports. Keeping
+the oracle in the host controller avoids that failure.
+
+Law version 2 binds the manifest into the contract seal. The manifest includes
+base commit, exported source/mode digest, corpus digest, resolved immutable image
+ID and platform, trusted controller hash/version, exact argv, environment, working
+directory, editable paths and limits. The sealed event privately archives source,
+modes and corpus for reproducibility; the model receives only source and manifest.
+Journals therefore contain private acceptance data and must be protected.
+
+Proposals contain only a bounded map of exact path replacements. No paths outside
+the allowlist, null deletions, symlinks, permission changes or submitted evaluation
+claims are accepted. A trusted Python controller reconstructs each candidate in a
+new private directory. It generates a unified patch from those exact bytes,
+including empty additions and missing-final-newline markers.
+
+Each case runs in a fresh local Podman container with an explicitly overridden
+entrypoint. The root filesystem and candidate source bind are read-only; the
+container gets no host credentials, engine socket, test files or network.
+Capabilities are dropped, no-new-privileges is enabled, UID/GID are unprivileged,
+and CPU/memory/PID/tmp/output/time limits apply. The controller compares raw stdout
+and observed process exit itself. Printing a purported success report or merely
+exiting zero cannot substitute for matching every sealed expected output.
+
+Fate admits only independently successful artifacts, regardless of model claims
+or the prayer's additional predicates. It reconstructs and reruns the winning
+replacement map in fresh containers before final validation and settlement.
+Evidence includes per-case execution IDs, bounded output previews/hashes,
+termination status, measured duration, tests passed, patch size/hash, proposal and
+candidate-tree hashes, base commit, image ID and profile hash. The journal
+preserves the winning file map and patch before success is returned. No merge or
+source-repository mutation occurs.
+
+Evaluation is performed in monitored helper subprocesses, not in the BEAM VM.
+Caller death closes the helper's input; an external cancellation monitor cleans
+up the attached CLI, container and temporary workspace. Containers also have
+engine-enforced lifetimes. A realm owner label derived from its journal path
+scopes startup cleanup: after a restart, that realm's orphan containers and
+workspace root are reaped before more work can run. Interrupted tasks remain cut,
+not retried. Kernel/engine crashes can still require operator storage recovery.
+
+The local Linux Podman engine, image, Python controller, VCS object store and
+host kernel are trusted. The current environment tests verify read-only source,
+hidden fixtures, absent credentials, no outbound network, zero effective
+capabilities, no-new-privileges, and cgroup memory/PID limits. Unsupported runtime
+configurations must not be assumed equivalent. Rootless execution is recommended
+where available; container isolation is not a defense against kernel escapes.
+
+This milestone deliberately supports successful CLI programs over bounded text
+source trees. It does not support arbitrary build pipelines, dependency fetching,
+binary patches, deletions, mode-only edits, remote engines, property-test oracles,
+in-process unit suites, automatic merge, or empirical claims about rivalry's value.
 
 ## Verification and roadmap
 
@@ -198,12 +266,12 @@ journal replay. It demonstrates mechanics, not empirical gains from rivalry.
 
 Next stages, without weakening Fate:
 
-1. **External evaluator:** immutable evaluator images, read-only sealed fixtures,
-   isolated workspaces, network policy, measured tests/type checks/benchmarks.
-   Workers never write acceptance definitions.
-2. **Repository artifacts:** content-addressed patches, base revisions, protected
-   merge effect intents and an idempotent, fenced Zeus executor. No host repository
-   mutation occurs in the present release.
+1. **Richer external evaluation:** isolated build stages, trusted out-of-process
+   type-check/benchmark/property-test oracles, dependency/image provenance and
+   resource accounting beyond the current black-box CLI cases.
+2. **Protected merge effects:** idempotent, fenced Zeus executor and immutable
+   effect intents. Winning patches and evidence now exist; host repository
+   mutation and automatic merging remain unimplemented.
 3. **Full succession trials:** incumbent and fresh-generation workspaces compete
    concurrently under the same evaluator; transfer office only after measured
    improvement.
