@@ -72,7 +72,8 @@ coding: [
   fixtures: "/private/path/to/cases.json",
   image: "docker.io/library/python:3.12-alpine",
   command: ["python3", "-I", "-B", "/candidate/src/main.py"],
-  case_timeout_ms: 3_000
+  case_timeout_ms: 3_000,
+  max_attempts: 1               # sealed limit, 1–3; use 2 or 3 to enable repair
 ]
 ```
 
@@ -119,6 +120,56 @@ watchdog against its immutable ID before starting candidate code; that watchdog
 survives controller death. Container confinement assumes a trusted engine/image/
 kernel; it is not a VM security boundary. Arbitrary remote engines and
 host-repository edits are unsupported.
+
+### Bounded repair
+
+Set `coding: [max_attempts: 3, ...]` to allow up to three sequential proposals
+per contender per tournament round. The default is one attempt. To see a
+deterministic offline fail → repair → pass:
+
+```sh
+OLYMPUS_MAX_ATTEMPTS=3 OLYMPUS_OUTPUT_DIR=var/repair-winner OLYMPUS_JOURNAL=var/repair-demo.journal mix run examples/coding_contest.exs
+```
+
+Prefix with `OLYMPUS_CONTAINER_ENGINE=docker` on Docker Desktop. The offline
+fixture deliberately submits a bad first candidate; actual Pi models are not
+forced to fail. The same attempt option works with the Pi provider variables.
+
+Each contender's original proposal allowance is split into fixed positive
+completion slices. They sum to that allowance; unused slices are not reassigned
+or refunded. Calls and evaluations share the original absolute contest deadline.
+The first passing candidate stops the sequence. Model errors, malformed edits,
+evaluator errors and invalid/broken oaths terminate it without automatic retries.
+Only independently measured candidate or contract failures permit repair.
+
+A repair request contains the current candidate files, outstanding oaths and a
+limited feedback object: aggregate pass counts and fixed failure categories.
+It omits test inputs, expected/observed output, stderr, output hashes, case
+indexes and numeric exit codes. Coding reviews get a similarly restricted
+evaluation view. Full evidence remains in trusted journal/state, not model
+context. Pass counts still form an adaptive oracle; this is bounded disclosure,
+not a guarantee of test secrecy across unlimited tasks.
+
+Models return only the paths to change at that step. Valid edits accumulate;
+each evaluation reconstructs a fresh workspace from the original sealed baseline.
+Committed oaths persist between attempts and rounds. A later malformed response
+cannot erase a prior commitment or turn a failed candidate into a winner.
+
+Inspect `result.rounds |> hd() |> Map.get(:candidates)`: each candidate has an
+`attempts` audit with indexes, completion slices, statuses, measured artifacts
+and validated oaths. Trusted progress snapshots preserve completed attempts and oaths through an
+ordinary worker timeout, marking any in-flight attempt interrupted. Audit is
+durable with the terminal settlement. An authority crash still cuts the pending thread; in-memory attempt details may be lost and
+the reservation is conservatively spent. Individual attempts are not fsynced.
+
+Coding admission includes audit space:
+`rounds × contenders × max_bytes × (max_attempts + 1) <= 1 MiB`.
+Use a new task ID or journal when changing the policy; settled tasks are replayed,
+not retroactively rerun. The final winner still undergoes a fresh independent
+evaluation. No merge or deployment is added.
+
+`OLYMPUS_OUTPUT_DIR` changes the example's export directory (default
+`var/winner`), so demonstrations need not replace a previous winner export.
 
 ### Coding verification
 
@@ -241,7 +292,9 @@ acceptance. Pi model/auth configuration is trusted configuration and may include
 credential commands or custom endpoints.
 
 The stream wrapper sets `maxTokens` to the smaller of the allowance and model
-limit; a second model request is forbidden. APIs that support output limits
+limit; a second model request in the same invocation is forbidden. Repair uses
+separate invocations with disjoint slices of the original proposal allowance.
+APIs that support output limits
 receive that cap. **Pi's native Codex endpoint does not forward a server-side
 output cap**: Codex completion allowance is checked after generation, while local
 deadlines and output-byte limits still apply. Provider-side generation or usage
@@ -303,8 +356,8 @@ names break ties lexicographically.
 Bounds: 128 checks, 32 path components, 64 JSON nesting levels, 128 KiB prayer
 term, odd rounds 1–9, deadline 1–120,000 ms, completion allowance 1–100,000,
 response/artifact limit 1–1,048,576 bytes. Realm admission additionally requires
-`rounds × contenders × max_bytes <= 1 MiB`, so accepted evidence fits journal
-frames. Oaths are capped at 16 checks and 8 KiB per god.
+`rounds × contenders × max_bytes <= 1 MiB`; coding mode additionally multiplies
+by `max_attempts + 1` to account for attempt audit and final evidence. Oaths are capped at 16 checks and 8 KiB per god.
 
 ## Trust boundary and limitations
 

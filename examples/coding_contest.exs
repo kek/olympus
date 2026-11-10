@@ -5,13 +5,17 @@ defmodule CodingContenders do
     {:ok, %{"artifact" => %{"files" => %{"main.py" => "print(0)\n"}}}}
   end
 
-  def respond(%{action: :propose}, _) do
-    {:ok,
-     %{
-       "artifact" => %{
-         "files" => %{"main.py" => "import sys\nprint(sum(map(int, sys.stdin.read().split())))\n"}
-       }
-     }}
+  def respond(%{action: :propose} = request, _) do
+    # Deliberate first-attempt failure makes the offline repair demo deterministic.
+    repair_demo =
+      request.coding["manifest"]["max_attempts"] > 1 and not Map.has_key?(request, :repair)
+
+    code =
+      if repair_demo,
+        do: "print(0)\n",
+        else: "import sys\nprint(sum(map(int, sys.stdin.read().split())))\n"
+
+    {:ok, %{"artifact" => %{"files" => %{"main.py" => code}}}}
   end
 
   def respond(%{action: :review}, _), do: {:ok, %{"objections" => []}}
@@ -58,7 +62,8 @@ File.write!(
       engine: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman"),
       command: ["python3", "-I", "-B", "/candidate/main.py"],
       editable: ["main.py"],
-      case_timeout_ms: 3000
+      case_timeout_ms: 3000,
+      max_attempts: String.to_integer(System.get_env("OLYMPUS_MAX_ATTEMPTS", "1"))
     ]
   )
 
@@ -81,15 +86,28 @@ result =
   end
 
 if result.status == :harmonious do
-  File.mkdir_p!("var/winner")
-  File.write!("var/winner/patch.diff", result.artifact["patch"])
-  File.write!("var/winner/evidence.json", Olympus.JSON.encode(result.artifact["evaluation"]))
+  output = System.get_env("OLYMPUS_OUTPUT_DIR", "var/winner")
+  File.mkdir_p!(output)
+  File.write!(Path.join(output, "patch.diff"), result.artifact["patch"])
 
-  IO.puts(
-    "#{result.winner} won. Patch: var/winner/patch.diff; evidence: var/winner/evidence.json"
+  File.write!(
+    Path.join(output, "evidence.json"),
+    Olympus.JSON.encode(result.artifact["evaluation"])
   )
+
+  IO.puts("#{result.winner} won. Patch: #{output}/patch.diff; evidence: #{output}/evidence.json")
 else
   IO.puts("Fate cut the contest; no patch was promoted.")
 end
+
+Enum.each(result.rounds, fn round ->
+  Enum.each(round.candidates, fn candidate ->
+    attempts = Map.get(candidate, :attempts, [])
+
+    if attempts != [] do
+      IO.puts("#{candidate.god}: " <> Enum.map_join(attempts, " → ", & &1["status"]))
+    end
+  end)
+end)
 
 IO.puts(Olympus.epic(realm))
