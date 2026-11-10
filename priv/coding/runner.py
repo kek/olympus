@@ -9,6 +9,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,23 @@ def command(args, *, timeout=10):
 def git(repo, *args):
     # Object plumbing only: no checkout, hooks, filters, merge or working-copy mutation.
     return command(["git", "--no-replace-objects", "--literal-pathspecs", "-C", repo, *args])
+
+
+def secure_workspace_root(root):
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise Invalid("invalid_workspace_root")
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid(), "invalid_workspace_root")
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
 
 
 def prepare(config):
@@ -144,10 +162,13 @@ def prepare(config):
     orphaned = command([engine, "ps", "--all", "--quiet", "--filter", "label=olympus.owner=" + owner]).decode().split()
     if orphaned:
         command(removal_command(engine, orphaned))
-    if root.exists():
-        require(not root.is_symlink(), "invalid_workspace_root")
-        shutil.rmtree(root)
-    root.mkdir(mode=0o700)
+    secure_workspace_root(root)
+    # Keep this private, owned inode stable for Desktop bind sharing across restarts.
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
     manifest = {
         "evaluator_version": VERSION, "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "base_revision": commit,
         "source_sha256": digest({"files": files, "modes": modes}), "fixtures_sha256": digest(cases),
@@ -180,7 +201,10 @@ def validate_profile(profile):
     require(manifest["runner_sha256"] == hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "runner_changed")
     require(re.fullmatch(r"[0-9a-f]{64}", profile["owner"]) is not None, "invalid_owner")
     root = Path(tempfile.gettempdir()) / ("olympus-workspaces-" + str(os.getuid()) + "-" + profile["owner"])
-    require(str(root) == profile["workspace_root"] and root.is_dir() and not root.is_symlink(), "invalid_workspace_root")
+    require(str(root) == profile["workspace_root"], "invalid_workspace_root")
+    info = root.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and
+            stat.S_IMODE(info.st_mode) == 0o700, "invalid_workspace_root")
     unsigned = {k: v for k, v in manifest.items() if k != "profile_sha256"}
     require(manifest["evaluator_version"] == VERSION and digest(unsigned) == manifest["profile_sha256"], "profile_changed")
     require(set(profile["modes"]) == set(profile["files"]) and

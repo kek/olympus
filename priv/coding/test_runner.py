@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import subprocess
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("coding_runner", Path(__file__).with_name("runner.py"))
 runner = importlib.util.module_from_spec(spec)
@@ -77,6 +78,35 @@ class PatchTests(unittest.TestCase):
                 timer.terminate()
                 timer.wait(timeout=2)
             subprocess.run(["docker", "rm", "--force", container_id], capture_output=True)
+
+    def test_workspace_reuse_checks_owner_and_locks_permissions_without_replacing_inode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory, "workspace")
+            root.mkdir(mode=0o777)
+            root.chmod(0o777)
+            inode = root.stat().st_ino
+            runner.secure_workspace_root(root)
+            self.assertEqual(root.stat().st_ino, inode)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            root.chmod(0o777)
+            sentinel = root / "must-survive"
+            sentinel.write_text("owned by another user")
+            owner = root.stat().st_uid
+            with patch.object(runner.os, "getuid", return_value=owner + 1):
+                with self.assertRaises(runner.Invalid):
+                    runner.secure_workspace_root(root)
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(root.stat().st_mode & 0o777, 0o777)
+
+    def test_workspace_parent_cannot_be_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "target")
+            target.mkdir()
+            link = Path(directory, "link")
+            link.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(runner.Invalid):
+                runner.secure_workspace_root(link)
+            self.assertTrue(target.is_dir())
 
     def test_path_validation_is_structural(self):
         for path in ["../main.py", "/main.py", "a//b", "./main.py", ".git/config", "a/../b", "a\\b"]:

@@ -232,6 +232,7 @@ defmodule Olympus.CodingTest do
   test "startup reaps realm-owned orphan containers and stale workspaces", ctx do
     realm = Path.join(ctx.root, "recovered-journal")
     {:ok, profile} = Coding.prepare(ctx.opts, realm)
+    root_inode = File.stat!(profile["workspace_root"]).inode
     File.write!(Path.join(profile["workspace_root"], "stale"), "unfinished")
 
     {id, 0} =
@@ -257,6 +258,7 @@ defmodule Olympus.CodingTest do
     assert {:ok, recovered} = Coding.prepare(ctx.opts, realm)
     assert containers(profile["owner"]) == ""
     assert File.ls!(recovered["workspace_root"]) == []
+    assert File.stat!(recovered["workspace_root"]).inode == root_inode
   end
 
   test "source links are rejected and output flooding cannot pass", ctx do
