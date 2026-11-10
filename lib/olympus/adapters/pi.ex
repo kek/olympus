@@ -57,7 +57,7 @@ defmodule Olympus.Adapters.Pi do
       ])
 
     try do
-      Port.command(port, [:json.encode(envelope), "\n"])
+      Port.command(port, [Olympus.JSON.encode(envelope), "\n"])
       collect(port, <<>>, limit + 128, deadline, owner_ref)
     after
       if Port.info(port), do: Port.close(port)
@@ -90,7 +90,7 @@ defmodule Olympus.Adapters.Pi do
   end
 
   defp decode(bytes) do
-    case :json.decode(bytes) do
+    case Olympus.JSON.decode(bytes) do
       %{"ok" => true, "value" => value} when is_map(value) -> {:ok, value}
       %{"ok" => false, "error" => "model_not_found"} -> {:error, :pi_model_not_found}
       %{"ok" => false, "error" => "response_budget"} -> {:error, :response_budget}
