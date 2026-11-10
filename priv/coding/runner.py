@@ -69,7 +69,7 @@ def git(repo, *args):
 
 
 def prepare(config):
-    allowed = {"repository", "revision", "fixtures", "image", "command", "editable", "source_files", "case_timeout_ms", "owner", "engine"}
+    allowed = {"repository", "revision", "fixtures", "image", "command", "editable", "source_files", "case_timeout_ms", "owner", "engine", "max_attempts"}
     require(isinstance(config, dict) and set(config) <= allowed, "invalid_profile")
     repo = str(Path(config["repository"]).resolve(strict=True))
     revision = config["revision"]
@@ -125,6 +125,8 @@ def prepare(config):
             all(isinstance(a, str) and 0 < len(a) <= 1024 and "\0" not in a for a in argv), "invalid_command")
     case_timeout = config.get("case_timeout_ms", 3000)
     require(type(case_timeout) is int and 100 <= case_timeout <= 10000, "invalid_case_timeout")
+    max_attempts = config.get("max_attempts", 1)
+    require(type(max_attempts) is int and 1 <= max_attempts <= 3, "invalid_attempt_limit")
     image = config["image"]
     require(isinstance(image, str) and len(image) <= 256 and not image.startswith("-"), "invalid_image")
     engine = config.get("engine", "podman")
@@ -154,7 +156,7 @@ def prepare(config):
         "command": argv, "workdir": "/candidate",
         "environment": {"LANG": "C.UTF-8", "TZ": "UTC", "PYTHONDONTWRITEBYTECODE": "1"},
         "editable": sorted(editable), "case_count": len(cases),
-        "case_timeout_ms": case_timeout, "max_edit_bytes": MAX_EDIT,
+        "case_timeout_ms": case_timeout, "max_attempts": max_attempts, "max_edit_bytes": MAX_EDIT,
         "max_output_bytes": MAX_OUTPUT,
         "isolation": {"network": "none", "rootfs": "read-only", "source": "read-only",
                       "uid": 65534, "cpus": 1, "memory_mb": 256, "pids": 64, "tmp_mb": 16},
@@ -299,6 +301,8 @@ def run_case(directory, manifest, case, deadline, owner):
             except subprocess.TimeoutExpired:
                 reason = "timeout"
         exit_code = proc.poll()
+        if exit_code in (125, 126, 127):
+            reason = "engine_error"
         if exit_code == 255 or exit_code == 137:
             reason = "killed_or_timeout"
     finally:

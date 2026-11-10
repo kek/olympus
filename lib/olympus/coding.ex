@@ -23,7 +23,7 @@ defmodule Olympus.Coding do
   def bind(contract, nil), do: contract
 
   def bind(contract, profile) do
-    contract = %{contract | evaluation: profile["manifest"], law_version: 2}
+    contract = %{contract | evaluation: profile["manifest"], law_version: 3}
     fields = contract |> Map.from_struct() |> Map.delete(:digest)
 
     digest =
@@ -52,6 +52,20 @@ defmodule Olympus.Coding do
   end
 
   def evaluate(_, _, _), do: {:error, :evaluation_timeout}
+
+  def for_review(nil, artifact), do: artifact
+
+  def for_review(_, %{"evaluation" => evidence} = artifact) do
+    safe =
+      Map.take(
+        evidence,
+        ~w(passed tests_passed tests_total patch_bytes patch_sha256 profile_sha256 base_revision image)
+      )
+
+    Map.put(artifact, "evaluation", safe)
+  end
+
+  def for_review(_, artifact), do: artifact
 
   def passed?(nil, _), do: true
   def passed?(_, %{"evaluation" => %{"passed" => true}}), do: true

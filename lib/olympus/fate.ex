@@ -115,7 +115,7 @@ defmodule Olympus.Fate do
   def handle_call({:pray, prayer}, _, state) do
     with {:ok, contract} <- Contract.compile(prayer),
          false <- Map.has_key?(state.durable.episodes, contract.id),
-         :ok <- evidence_budget(contract, state.contenders) do
+         :ok <- evidence_budget(contract, state.contenders, state.coding) do
       contract = Coding.bind(contract, state.coding)
       epoch = state.durable.epoch + 1
       reserved = allocate(state.durable.ledger, contract.tokens, epoch)
@@ -151,8 +151,10 @@ defmodule Olympus.Fate do
     end
   end
 
-  defp evidence_budget(contract, contenders) do
-    if contract.rounds * length(contenders) * contract.max_bytes <= 1_048_576,
+  defp evidence_budget(contract, contenders, coding) do
+    multiplier = if coding, do: coding["manifest"]["max_attempts"] + 1, else: 1
+
+    if contract.rounds * length(contenders) * contract.max_bytes * multiplier <= 1_048_576,
       do: :ok,
       else: {:error, :evidence_budget}
   end
@@ -271,6 +273,7 @@ defmodule Olympus.Fate do
       Enum.map_reduce(state.contenders, acc, fn god, acc ->
         {budget, acc} = reserve(acc, reserved, god, contract.rounds)
         request = request(state, contract, god, budget, deadline, :propose)
+        request = put_in(request, [:identity, :ambrosia, :oaths], acc.oaths[god])
         {{god, launch(state, request, budget)}, acc}
       end)
 
@@ -293,9 +296,20 @@ defmodule Olympus.Fate do
                   | oaths: acc.oaths[god]
                 })
 
-              if Coding.passed?(state.coding, artifact),
-                do: assessment,
-                else: %{assessment | measurement: {:error, :acceptance_failed}}
+              cond do
+                state.coding != nil and body["_olympus_terminal"] == "invalid_oath" ->
+                  %{assessment | measurement: {:error, :invalid_oath}}
+
+                state.coding != nil and
+                    body["_olympus_terminal"] in ["search_timeout", "search_failed"] ->
+                  %{assessment | measurement: {:error, :attempt_interrupted}}
+
+                not Coding.passed?(state.coding, artifact) ->
+                  %{assessment | measurement: {:error, :acceptance_failed}}
+
+                true ->
+                  assessment
+              end
 
             _ ->
               %{measurement: {:error, :invalid_proposal}, oaths: [], broken: []}
@@ -312,7 +326,14 @@ defmodule Olympus.Fate do
             disqualified: disqualified
         }
 
-        {Map.merge(assessment, %{god: god, artifact: artifact, review: nil}), acc}
+        attempts =
+          case response do
+            {:ok, body} when state.coding != nil -> Map.get(body, "_olympus_attempts", [])
+            _ -> []
+          end
+
+        {Map.merge(assessment, %{god: god, artifact: artifact, review: nil, attempts: attempts}),
+         acc}
       end)
 
     {outcomes, acc}
@@ -325,7 +346,7 @@ defmodule Olympus.Fate do
 
       req =
         request(state, contract, enemy, budget, deadline, :review)
-        |> Map.put(:artifact, candidate.artifact)
+        |> Map.put(:artifact, Coding.for_review(state.coding, candidate.artifact))
 
       response = launch(state, req, budget) |> await(deadline, contract.max_bytes)
 
@@ -423,59 +444,67 @@ defmodule Olympus.Fate do
       coding = state.coding
       deadline = now() + request.timeout_ms
       owner = self()
+      tag = make_ref()
 
-      Task.Supervisor.async_nolink(Olympus.Tasks, fn ->
-        worker = self()
+      task =
+        Task.Supervisor.async_nolink(Olympus.Tasks, fn ->
+          worker = self()
 
-        watcher =
-          spawn(fn ->
-            owner_ref = Process.monitor(owner)
-            worker_ref = Process.monitor(worker)
+          watcher =
+            spawn(fn ->
+              owner_ref = Process.monitor(owner)
+              worker_ref = Process.monitor(worker)
 
-            receive do
-              {:DOWN, ^owner_ref, :process, ^owner, _} -> Process.exit(worker, :kill)
-              {:DOWN, ^worker_ref, :process, ^worker, _} -> :ok
+              receive do
+                {:DOWN, ^owner_ref, :process, ^owner, _} -> Process.exit(worker, :kill)
+                {:DOWN, ^worker_ref, :process, ^worker, _} -> :ok
+              end
+            end)
+
+          try do
+            if coding && request.action == :propose do
+              Olympus.Coding.Search.run(adapter, opts, request, coding, deadline, fn snapshot ->
+                send(owner, {tag, :coding_progress, snapshot})
+              end)
+            else
+              adapter.respond(request, opts) |> validate_response(request.max_bytes)
             end
-          end)
-
-        try do
-          with {:ok, body} <-
-                 adapter.respond(request, opts) |> validate_response(request.max_bytes) do
-            evaluate_response(coding, request.action, body, deadline, request.max_bytes)
+          after
+            Process.exit(watcher, :kill)
           end
-        after
-          Process.exit(watcher, :kill)
-        end
-      end)
+        end)
+
+      {task, tag}
     end
   end
 
   defp await(nil, _, _), do: {:error, :budget}
 
-  defp await(task, deadline, _limit) do
-    result = Task.yield(task, max(deadline - now(), 0)) || Task.shutdown(task, :brutal_kill)
+  defp await({task, tag}, deadline, _limit) do
+    yielded = Task.yield(task, max(deadline - now(), 0))
+    result = yielded || Task.shutdown(task, :brutal_kill)
+    progress = latest_progress(tag, nil)
 
     case result do
       {:ok, {:ok, value}} ->
         {:ok, value}
 
+      _ when not is_nil(progress) ->
+        status = if is_nil(yielded), do: "search_timeout", else: "search_failed"
+        {:ok, Olympus.Coding.Search.interrupted(progress, status)}
+
       _ ->
         {:error, :adapter_failed}
     end
-  rescue
-    _ -> {:error, :adapter_failed}
   end
 
-  defp evaluate_response(nil, _, body, _, _), do: {:ok, body}
-  defp evaluate_response(_, :review, body, _, _), do: {:ok, body}
-
-  defp evaluate_response(coding, :propose, %{"artifact" => artifact} = body, deadline, limit) do
-    with {:ok, measured} <- Coding.evaluate(coding, artifact, deadline - now()) do
-      validate_response({:ok, Map.put(body, "artifact", measured)}, limit)
+  defp latest_progress(tag, latest) do
+    receive do
+      {^tag, :coding_progress, snapshot} -> latest_progress(tag, snapshot)
+    after
+      0 -> latest
     end
   end
-
-  defp evaluate_response(_, _, _, _, _), do: {:error, :invalid_patch}
 
   defp validate_response({:ok, value}, limit) do
     if :erlang.external_size(value) <= limit * 8 + 4096 and Contract.json?(value) and
