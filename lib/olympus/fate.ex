@@ -4,7 +4,7 @@ defmodule Olympus.Fate do
   force-merge, test-edit, favor-edit, or human approval operation.
   """
   use GenServer
-  alias Olympus.{Contract, God, Journal}
+  alias Olympus.{Coding, Contract, God, Journal}
 
   def start_link(opts) do
     path = opts |> Keyword.fetch!(:journal) |> Path.expand()
@@ -23,7 +23,8 @@ defmodule Olympus.Fate do
   def init(opts) do
     path = Keyword.fetch!(opts, :journal)
 
-    with {:ok, journal, events} <- Journal.open(path) do
+    with {:ok, coding} <- Coding.prepare(opts[:coding], path),
+         {:ok, journal, events} <- Journal.open(path) do
       ledger =
         Map.new(
           God.names(),
@@ -58,6 +59,7 @@ defmodule Olympus.Fate do
         events: events,
         durable: durable,
         realm: path,
+        coding: coding,
         adapter: Keyword.fetch!(opts, :adapter),
         adapter_opts: Keyword.get(opts, :adapter_opts, []),
         contenders: Keyword.get(opts, :contenders, ~w(athena ares hephaestus))
@@ -114,6 +116,7 @@ defmodule Olympus.Fate do
     with {:ok, contract} <- Contract.compile(prayer),
          false <- Map.has_key?(state.durable.episodes, contract.id),
          :ok <- evidence_budget(contract, state.contenders) do
+      contract = Coding.bind(contract, state.coding)
       epoch = state.durable.epoch + 1
       reserved = allocate(state.durable.ledger, contract.tokens, epoch)
 
@@ -125,7 +128,19 @@ defmodule Olympus.Fate do
       }
 
       durable = %{state.durable | epoch: epoch, pending: pending}
-      state = persist(state, :thread_spun, %{state: durable, contract: contract})
+      seal = %{state: durable, contract: contract}
+
+      seal =
+        if state.coding,
+          do:
+            Map.put(
+              seal,
+              :evaluation_profile,
+              Map.drop(state.coding, ["owner", "workspace_root"])
+            ),
+          else: seal
+
+      state = persist(state, :thread_spun, seal)
 
       result = contest(state, contract, reserved)
       state = finish(state, result)
@@ -217,12 +232,14 @@ defmodule Olympus.Fate do
 
     name = if winner, do: elem(winner, 0)
     artifact = if name, do: result.best[name].artifact
+    {artifact, final_verified} = recheck(state.coding, artifact, deadline)
     sponsor = if name, do: sponsor(state, name, reviewer(state, name, result.relationships))
 
     # The final gate is evaluated again, never inferred from a vote or summary.
     harmonious =
-      name != nil and sponsor != nil and now() < deadline and
+      name != nil and sponsor != nil and final_verified and now() < deadline and
         match?({:ok, _}, Contract.measure(contract, artifact)) and
+        Coding.passed?(state.coding, artifact) and
         Enum.all?(result.oaths[name], &Contract.holds?(&1, artifact)) and now() < deadline
 
     %{
@@ -237,6 +254,16 @@ defmodule Olympus.Fate do
       relationships: result.relationships,
       spent: Map.new(reserved, fn {god, budget} -> {god, budget - result.remaining[god]} end)
     }
+  end
+
+  defp recheck(nil, artifact, _), do: {artifact, true}
+  defp recheck(_, nil, _), do: {nil, false}
+
+  defp recheck(coding, artifact, deadline) do
+    case Coding.evaluate(coding, Map.take(artifact, ["files"]), deadline - now()) do
+      {:ok, measured} -> {measured, Coding.passed?(coding, measured)}
+      _ -> {artifact, false}
+    end
   end
 
   defp proposals(state, contract, reserved, acc, deadline) do
@@ -260,10 +287,15 @@ defmodule Olympus.Fate do
         assessment =
           case response do
             {:ok, %{"artifact" => _} = body} ->
-              Olympus.Politics.assess(contract, artifact, body, %{
-                state.durable.ledger[god]
-                | oaths: acc.oaths[god]
-              })
+              assessment =
+                Olympus.Politics.assess(contract, artifact, body, %{
+                  state.durable.ledger[god]
+                  | oaths: acc.oaths[god]
+                })
+
+              if Coding.passed?(state.coding, artifact),
+                do: assessment,
+                else: %{assessment | measurement: {:error, :acceptance_failed}}
 
             _ ->
               %{measurement: {:error, :invalid_proposal}, oaths: [], broken: []}
@@ -375,7 +407,8 @@ defmodule Olympus.Fate do
       budget: budget,
       timeout_ms: max(deadline - now(), 1),
       max_bytes: contract.max_bytes,
-      opponents: state.contenders -- [god]
+      opponents: state.contenders -- [god],
+      coding: Coding.context(state.coding)
     }
   end
 
@@ -387,6 +420,8 @@ defmodule Olympus.Fate do
     else
       adapter = state.adapter
       opts = state.adapter_opts
+      coding = state.coding
+      deadline = now() + request.timeout_ms
       owner = self()
 
       Task.Supervisor.async_nolink(Olympus.Tasks, fn ->
@@ -404,7 +439,10 @@ defmodule Olympus.Fate do
           end)
 
         try do
-          adapter.respond(request, opts) |> validate_response(request.max_bytes)
+          with {:ok, body} <-
+                 adapter.respond(request, opts) |> validate_response(request.max_bytes) do
+            evaluate_response(coding, request.action, body, deadline, request.max_bytes)
+          end
         after
           Process.exit(watcher, :kill)
         end
@@ -428,9 +466,20 @@ defmodule Olympus.Fate do
     _ -> {:error, :adapter_failed}
   end
 
+  defp evaluate_response(nil, _, body, _, _), do: {:ok, body}
+  defp evaluate_response(_, :review, body, _, _), do: {:ok, body}
+
+  defp evaluate_response(coding, :propose, %{"artifact" => artifact} = body, deadline, limit) do
+    with {:ok, measured} <- Coding.evaluate(coding, artifact, deadline - now()) do
+      validate_response({:ok, Map.put(body, "artifact", measured)}, limit)
+    end
+  end
+
+  defp evaluate_response(_, _, _, _, _), do: {:error, :invalid_patch}
+
   defp validate_response({:ok, value}, limit) do
     if :erlang.external_size(value) <= limit * 8 + 4096 and Contract.json?(value) and
-         byte_size(:json.encode(value) |> IO.iodata_to_binary()) <= limit,
+         byte_size(Olympus.JSON.encode(value) |> IO.iodata_to_binary()) <= limit,
        do: {:ok, value},
        else: {:error, :response_budget}
   end

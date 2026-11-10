@@ -16,7 +16,7 @@ defmodule Olympus.Contract do
     :digest,
     :law_version
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [evaluation: nil]
 
   def compile(prayer) when is_map(prayer) do
     with true <- :erlang.external_size(prayer) <= 131_072,
@@ -107,7 +107,7 @@ defmodule Olympus.Contract do
       not json?(artifact) ->
         {:error, :not_json}
 
-      byte_size(:json.encode(artifact) |> IO.iodata_to_binary()) > contract.max_bytes ->
+      byte_size(Olympus.JSON.encode(artifact) |> IO.iodata_to_binary()) > contract.max_bytes ->
         {:error, :artifact_budget}
 
       true ->
