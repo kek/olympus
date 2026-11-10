@@ -18,19 +18,26 @@ defmodule Olympus.Adapters.OpenAI do
 
       instruction =
         if action == :propose do
-          "Return only a JSON object: {\"artifact\": <your candidate>}. Compete to satisfy the sealed checks and optimize the objective."
+          if Map.get(request, :coding) do
+            "Return only JSON: {\"artifact\":{\"files\":{\"editable/path\":\"complete replacement text\"}}}. Implement the task using coding.files. Edit only coding.editable paths. Never submit evaluation results; independent hidden cases decide acceptance."
+          else
+            "Return only a JSON object: {\"artifact\": <your candidate>}. Compete to satisfy the sealed checks and optimize the objective."
+          end
         else
           "Return only a JSON object: {\"objections\": [zero-based indexes of sealed checks this artifact fails]}. Find real faults in your enemy's work. Never invent checks."
         end
 
       body =
-        :json.encode(%{
+        Olympus.JSON.encode(%{
           "model" => Keyword.fetch!(opts, :model),
           "max_tokens" => request.budget,
           "response_format" => %{"type" => "json_object"},
           "messages" => [
             %{"role" => "system", "content" => instruction},
-            %{"role" => "user", "content" => :json.encode(wire(request)) |> IO.iodata_to_binary()}
+            %{
+              "role" => "user",
+              "content" => Olympus.JSON.encode(wire(request)) |> IO.iodata_to_binary()
+            }
           ]
         })
         |> IO.iodata_to_binary()
@@ -90,14 +97,15 @@ defmodule Olympus.Adapters.OpenAI do
       "identity" => inspect(request.identity),
       "contract" => request.contract,
       "artifact" => Map.get(request, :artifact),
-      "opponents" => request.opponents
+      "opponents" => request.opponents,
+      "coding" => Map.get(request, :coding)
     }
   end
 
   defp decode(body, limit) when byte_size(body) <= limit * 4 + 8192 do
-    with %{"choices" => [%{"message" => %{"content" => text}} | _]} <- :json.decode(body),
+    with %{"choices" => [%{"message" => %{"content" => text}} | _]} <- Olympus.JSON.decode(body),
          true <- byte_size(text) <= limit,
-         result when is_map(result) <- :json.decode(text) do
+         result when is_map(result) <- Olympus.JSON.decode(text) do
       {:ok, result}
     else
       _ -> {:error, :invalid_provider_response}

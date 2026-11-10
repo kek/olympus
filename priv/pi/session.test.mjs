@@ -4,7 +4,8 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { boundStream, run } from "./session.mjs";
 
 const request = {
@@ -30,7 +31,7 @@ async function fixture(t, { text = '{"artifact":{"ok":true}}', status = 200, fin
     const event = (choices) => res.write("data: " + JSON.stringify({
       id: "test", object: "chat.completion.chunk", model: "fixture", choices,
     }) + "\n\n");
-    event([{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }]);
+    event([{ index: 0, delta: { role: "assistant", content: typeof text === "function" ? text(calls.at(-1)) : text }, finish_reason: null }]);
     event([{ index: 0, delta: {}, finish_reason: finish }]);
     res.end("data: [DONE]\n\n");
   });
@@ -155,6 +156,67 @@ test("Elixir adapter invokes the real SDK bridge against a local provider", asyn
   assert.deepEqual(JSON.parse(line.slice("PI_RESULT:".length)), { artifact: { ok: true } });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].max_tokens ?? calls[0].max_completion_tokens, 37);
+});
+
+test("full Fate/Pi coding tournament returns an independently verified patch", {
+  skip: process.env.OLYMPUS_CONTAINER_TESTS !== "1", timeout: 60_000,
+}, async (t) => {
+  const { config, calls } = await fixture(t, { text: (body) => {
+    const content = body.messages.at(-1).content;
+    const wire = JSON.parse(typeof content === "string" ? content : content.map((part) => part.text || "").join(""));
+    if (wire.action === "review") return '{"objections":[]}';
+    const code = wire.god === "ares" ? "print(0)\n" :
+      "import sys\nprint(sum(map(int, sys.stdin.read().split())))\n";
+    return JSON.stringify({ artifact: { files: { "main.py": code } } });
+  } });
+  const repository = path.join(config.agent_dir, "source");
+  await fs.mkdir(repository);
+  const exec = promisify(execFile);
+  await exec("jj", ["git", "init", repository]);
+  await fs.writeFile(path.join(repository, "main.py"), "print('broken')\n");
+  await exec("jj", ["-R", repository, "status"]);
+  await fs.writeFile(path.join(config.agent_dir, "cases.json"), JSON.stringify([
+    { stdin: "2 3\n", stdout: "5\n", exit_code: 0 },
+    { stdin: "-1 4 8\n", stdout: "11\n", exit_code: 0 },
+  ]));
+  const code = `
+    root = System.fetch_env!("PI_FIXTURE_DIR")
+    {:ok, realm} = Olympus.start_realm(
+      journal: Path.join(root, "journal"), contenders: ~w(athena ares),
+      adapter: Olympus.Adapters.Pi,
+      adapter_opts: [provider: "fixture", model: "fixture", agent_dir: root,
+        node: System.fetch_env!("PI_NODE_PATH")],
+      coding: [repository: Path.join(root, "source"), revision: "@",
+        fixtures: Path.join(root, "cases.json"),
+        image: System.get_env("OLYMPUS_TEST_IMAGE", "docker.io/library/python:3.12-alpine"),
+        command: ["python3", "-I", "-B", "/candidate/main.py"], editable: ["main.py"]])
+    {:ok, result} = Olympus.pray(realm, %{
+      "id" => "pi-coding", "request" => "Read whitespace-separated integers and print their sum.",
+      "checks" => [%{"path" => ["evaluation", "passed"], "op" => "eq", "value" => true}],
+      "rounds" => 1, "timeout_ms" => 120_000, "tokens" => 24_000, "max_bytes" => 32_768})
+    if result.status != :harmonious, do: (IO.inspect(result); System.halt(1))
+    IO.puts("CODING_RESULT:" <> IO.iodata_to_binary(Olympus.JSON.encode(
+      %{"winner" => result.winner, "artifact" => result.artifact})))
+  `;
+  const child = spawn("mix", ["run", "-e", code], {
+    cwd: new URL("../../", import.meta.url).pathname,
+    env: { ...process.env, PI_FIXTURE_DIR: config.agent_dir, PI_NODE_PATH: process.execPath },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const status = await new Promise((resolve) => child.on("exit", resolve));
+  assert.equal(status, 0, stdout + stderr);
+  const line = stdout.split("\n").find((line) => line.startsWith("CODING_RESULT:"));
+  const result = JSON.parse(line.slice("CODING_RESULT:".length));
+  assert.equal(result.winner, "athena");
+  assert.equal(result.artifact.evaluation.passed, true);
+  assert.equal(result.artifact.evaluation.tests_passed, 2);
+  assert.ok(result.artifact.patch.includes("print(sum"));
+  assert.equal(calls.length, 4);
+  assert.equal(await fs.readFile(path.join(repository, "main.py"), "utf8"), "print('broken')\n");
 });
 
 test("closing parent input cancels a bridge with an active provider request", { timeout: 15_000 }, async (t) => {
