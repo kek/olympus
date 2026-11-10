@@ -25,12 +25,20 @@ path to create a separate realm.
 
 ## Coding contest
 
-Requires **Linux, a local Podman engine with cgroup limits, Python 3.10+, Git and
-Jujutsu**, in addition to Elixir/OTP. No runtime image is pulled automatically:
+Requires **a local Linux container engine, Python 3.10+, Git and Jujutsu**, in
+addition to Elixir/OTP. Supported engines are Podman on Linux and Docker Desktop
+(with Linux containers) on macOS. No runtime image is pulled automatically:
 
 ```sh
 podman pull docker.io/library/python:3.12-alpine
 mix run examples/coding_contest.exs
+```
+
+With Docker Desktop instead:
+
+```sh
+docker pull docker.io/library/python:3.12-alpine
+OLYMPUS_CONTAINER_ENGINE=docker mix run examples/coding_contest.exs
 ```
 
 This offline example creates a tiny throwaway repository under `var/coding-source`.
@@ -56,6 +64,7 @@ For your own task, configure a realm with `coding:`:
 
 ```elixir
 coding: [
+  engine: "podman",             # or "docker" for Docker Desktop
   repository: "/absolute/path/to/repository",
   revision: "immutable-commit-or-jj-revision",
   source_files: ["src/main.py"], # optional exact exported files; otherwise all tracked files
@@ -104,10 +113,12 @@ submodules, LFS pointers, deletions and mode-only edits are unsupported.
 
 The journal archives acceptance cases and source; keep it private. Replays use
 recorded decisions without rerunning code. A restart cuts unfinished epochs,
-reaps realm-labeled orphan containers and removes stale workspaces. Engine-level
-timeouts also bound orphan container lifetimes. Container confinement assumes a
-trusted engine/image/kernel; it is not a VM security boundary. Remote Podman
-engines and host-repository edits are unsupported.
+reaps realm-labeled orphan containers and removes stale workspaces. Podman uses
+engine-level expiry. Docker creates the container first and arms a separate host
+watchdog against its immutable ID before starting candidate code; that watchdog
+survives controller death. Container confinement assumes a trusted engine/image/
+kernel; it is not a VM security boundary. Arbitrary remote engines and
+host-repository edits are unsupported.
 
 ### Coding verification
 
@@ -118,6 +129,8 @@ python3 -B -m unittest discover -s priv/coding -p 'test_*.py'
 OLYMPUS_CONTAINER_TESTS=1 npm test --prefix priv/pi
 ```
 
+For Docker Desktop, prefix integration commands with `OLYMPUS_CONTAINER_ENGINE=docker`.
+The Python suite then also checks expiry of an unattended container.
 Plain `mix test` excludes container-dependent tests. The integration suite
 requires the image above and verifies containment, spoofing resistance, patch
 fidelity, cancellation, winner reruns and recovery. No paid credentials are needed.
@@ -207,6 +220,14 @@ The ordinary `mix test` suite does not require the SDK installation or Node.
 )
 ```
 
+To reuse Pi’s Codex login on a host with Docker Desktop:
+
+```sh
+OLYMPUS_CONTAINER_ENGINE=docker \
+OLYMPUS_PI_PROVIDER=openai-codex OLYMPUS_PI_MODEL=gpt-6.1-sol \
+OLYMPUS_JOURNAL=var/codex-coding.journal mix run examples/coding_contest.exs
+```
+
 By default the adapter uses `PI_CODING_AGENT_DIR`, then `~/.pi/agent`.
 Authentication must be available **where Olympus runs**; a sandbox does not
 automatically have access to the host's Pi credentials. No credentials are copied
@@ -219,10 +240,13 @@ review adapter, not permission for Pi to edit the repository. Fate alone decides
 acceptance. Pi model/auth configuration is trusted configuration and may include
 credential commands or custom endpoints.
 
-The provider receives `maxTokens` capped to the god's allowance and the model's
-limit; a second model request is forbidden. Truncated, failed, oversized or
-non-object JSON output is rejected. Input tokens and provider-side billing remain
-outside the completion allowance, as with the HTTPS adapter.
+The stream wrapper sets `maxTokens` to the smaller of the allowance and model
+limit; a second model request is forbidden. APIs that support output limits
+receive that cap. **Pi's native Codex endpoint does not forward a server-side
+output cap**: Codex completion allowance is checked after generation, while local
+deadlines and output-byte limits still apply. Provider-side generation or usage
+may exceed that allowance. Truncated, failed, oversized or non-object JSON output
+is rejected. Input tokens and provider-side billing remain outside the allowance.
 
 SDK startup counts against Fate's deadline and can take several seconds **per
 invocation**. Use a larger `timeout_ms` (e.g. `120_000`) and adequate completion

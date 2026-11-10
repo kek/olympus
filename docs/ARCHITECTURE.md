@@ -170,7 +170,10 @@ custom or MCP tools are enabled. Settings disable provider/agent retries,
 compaction and cache warming. Physical model selection is explicit; there is no
 fallback model or routing trial. The stream wrapper sets `maxTokens`, removes
 model sampling overrides that could replace that cap, and rejects any second
-provider stream for the reservation. Non-success stop reasons and malformed
+provider stream for the reservation. Native Codex does not send a server-side
+output-token limit; its reported completion usage is checked after generation.
+For Codex, only local deadline/output bytes are hard-bounded, not remote token
+consumption. The same reservation is never reused for another model request. Non-success stop reasons and malformed
 JSON fail closed.
 
 Pi's runtime resolves credentials using the selected agent directory and
@@ -216,7 +219,7 @@ claims are accepted. A trusted Python controller reconstructs each candidate in 
 new private directory. It generates a unified patch from those exact bytes,
 including empty additions and missing-final-newline markers.
 
-Each case runs in a fresh local Podman container with an explicitly overridden
+Each case runs in a fresh local Podman or Docker container with an explicitly overridden
 entrypoint. The root filesystem and candidate source bind are read-only; the
 container gets no host credentials, engine socket, test files or network.
 Capabilities are dropped, no-new-privileges is enabled, UID/GID are unprivileged,
@@ -235,13 +238,16 @@ source-repository mutation occurs.
 
 Evaluation is performed in monitored helper subprocesses, not in the BEAM VM.
 Caller death closes the helper's input; an external cancellation monitor cleans
-up the attached CLI, container and temporary workspace. Containers also have
-engine-enforced lifetimes. A realm owner label derived from its journal path
+up the attached CLI, container and temporary workspace. Podman containers also have
+engine-enforced lifetimes. Docker containers are created without executing code;
+an independent host watchdog is armed against the immutable container ID before
+attach/start. The candidate cannot kill this host process. It expires the
+container even if the controller is abruptly killed. A realm owner label derived from its journal path
 scopes startup cleanup: after a restart, that realm's orphan containers and
 workspace root are reaped before more work can run. Interrupted tasks remain cut,
 not retried. Kernel/engine crashes can still require operator storage recovery.
 
-The local Linux Podman engine, image, Python controller, VCS object store and
+The local Linux Podman engine or Docker Desktop Linux VM, image, Python controller, VCS object store and
 host kernel are trusted. The current environment tests verify read-only source,
 hidden fixtures, absent credentials, no outbound network, zero effective
 capabilities, no-new-privileges, and cgroup memory/PID limits. Unsupported runtime
