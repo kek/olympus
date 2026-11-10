@@ -1,5 +1,5 @@
 // One request per process. Stdout is reserved for one bounded protocol reply.
-import { run } from "./session.mjs";
+import { runWithUsage } from "./session.mjs";
 
 let input = Buffer.alloc(0);
 let started = false;
@@ -22,7 +22,7 @@ process.stdin.on("data", async (chunk) => {
     const timeout = envelope.request?.timeout_ms;
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120_000) return process.exit(1);
     timer = setTimeout(() => process.exit(1), timeout);
-    const reply = await run(envelope);
+    const reply = await runWithUsage(envelope);
     clearTimeout(timer);
     process.stdout.write(JSON.stringify(reply) + "\n", () => process.exit(0));
   } catch {

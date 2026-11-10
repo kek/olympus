@@ -30,6 +30,7 @@ defmodule Olympus.CodingSearchTest do
       })
 
     %{
+      action: :propose,
       budget: budget,
       timeout_ms: 1000,
       max_bytes: 4096,
@@ -91,11 +92,25 @@ defmodule Olympus.CodingSearchTest do
       oath = %{"path" => [], "op" => "neq", "value" => String.duplicate("y", 7500)}
       assert :erlang.external_size([oath]) <= 8192
 
+      call = %{
+        "adapter" => String.duplicate("a", 1020),
+        "provider" => String.duplicate("p", 256),
+        "model" => String.duplicate("m", 256),
+        "action" => "propose",
+        "status" => "error",
+        "completion_allowance" => 100_000,
+        "elapsed_ms" => 120_000,
+        "usage_format" => "pi-sdk",
+        "usage" =>
+          Map.new(~w(input output cacheRead cacheWrite totalTokens), &{&1, 9_007_199_254_740_991})
+      }
+
       trace =
         for n <- 1..attempts,
             do: %{
               "attempt" => n,
               "budget" => 1000,
+              "call" => call,
               "status" => "acceptance_failed",
               "artifact" => artifact,
               "oaths" => [oath]
@@ -107,7 +122,7 @@ defmodule Olympus.CodingSearchTest do
         oaths: [oath],
         broken: [oath],
         measurement: {:error, :oath_broken},
-        review: nil
+        review: %{reviewer: "ares", call: call, alleged: [], verified: []}
       }
 
       result = %{

@@ -35,7 +35,25 @@ export function boundStream(stream, budget, timeoutMs) {
   };
 }
 
-export async function run({ config, request }) {
+const USAGE_KEYS = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"];
+
+export function reportedUsage(usage) {
+  if (!usage || !USAGE_KEYS.every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0) ||
+      !USAGE_KEYS.some((key) => usage[key] > 0)) return null;
+  return Object.fromEntries(USAGE_KEYS.map((key) => [key, usage[key]]));
+}
+
+export async function run(input) {
+  return runSession(input, {});
+}
+
+export async function runWithUsage(input) {
+  const meta = { provider: null, model: null, usage_format: "pi-sdk", usage: null };
+  const reply = await runSession(input, meta);
+  return { ...reply, meta };
+}
+
+async function runSession({ config, request }, meta) {
   if (!config?.provider || !config?.model ||
       !["propose", "review"].includes(request?.action) ||
       !Number.isInteger(request.budget) || request.budget < 1 || request.budget > 100_000 ||
@@ -57,6 +75,8 @@ export async function run({ config, request }) {
     });
     const selected = modelRuntime.getPhysicalModel(config.provider, config.model);
     if (!selected) return { ok: false, error: "model_not_found" };
+    meta.provider = selected.provider;
+    meta.model = selected.id;
 
     // Arbitrary model sampling parameters must not override the provider token cap.
     const model = { ...selected, samplingParams: undefined, samplingParamsByThinkingLevel: undefined };
@@ -90,6 +110,7 @@ export async function run({ config, request }) {
 
     await session.prompt(JSON.stringify(request), { expandPromptTemplates: false });
     const message = session.messages.filter((m) => m.role === "assistant").at(-1);
+    meta.usage = reportedUsage(message?.usage);
     if (!message || message.stopReason !== "stop" ||
         message.content.some((c) => c.type !== "text" && c.type !== "thinking")) {
       return { ok: false, error: "pi_failed" };
@@ -103,6 +124,8 @@ export async function run({ config, request }) {
       return { ok: false, error: "invalid_response" };
     return { ok: true, value };
   } catch {
+    const message = session?.messages.filter((m) => m.role === "assistant").at(-1);
+    meta.usage = meta.usage || reportedUsage(message?.usage);
     // Do not put provider errors, prompts, paths or credentials on stdout/stderr.
     return { ok: false, error: "pi_failed" };
   } finally {

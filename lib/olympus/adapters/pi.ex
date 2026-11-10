@@ -7,6 +7,14 @@ defmodule Olympus.Adapters.Pi do
   @behaviour Olympus.Adapter
 
   def respond(request, opts) do
+    case respond_with_usage(request, opts) do
+      {:ok, value, _meta} -> {:ok, value}
+      {:error, reason, _meta} -> {:error, reason}
+      other -> other
+    end
+  end
+
+  def respond_with_usage(request, opts) do
     with provider when is_binary(provider) and provider != "" <- opts[:provider],
          model when is_binary(model) and model != "" <- opts[:model],
          node when is_binary(node) <- System.find_executable(Keyword.get(opts, :node, "node")) do
@@ -58,7 +66,7 @@ defmodule Olympus.Adapters.Pi do
 
     try do
       Port.command(port, [Olympus.JSON.encode(envelope), "\n"])
-      collect(port, <<>>, limit + 128, deadline, owner_ref)
+      collect(port, <<>>, limit + 2048, deadline, owner_ref)
     after
       if Port.info(port), do: Port.close(port)
     end
@@ -91,11 +99,22 @@ defmodule Olympus.Adapters.Pi do
 
   defp decode(bytes) do
     case Olympus.JSON.decode(bytes) do
-      %{"ok" => true, "value" => value} when is_map(value) -> {:ok, value}
-      %{"ok" => false, "error" => "model_not_found"} -> {:error, :pi_model_not_found}
-      %{"ok" => false, "error" => "response_budget"} -> {:error, :response_budget}
-      %{"ok" => false, "error" => "token_budget"} -> {:error, :token_budget}
-      _ -> {:error, :pi_failed}
+      %{"ok" => true, "value" => value} = reply when is_map(value) ->
+        {:ok, value, reply["meta"]}
+
+      %{"ok" => false} = reply ->
+        reason =
+          case reply["error"] do
+            "model_not_found" -> :pi_model_not_found
+            "response_budget" -> :response_budget
+            "token_budget" -> :token_budget
+            _ -> :pi_failed
+          end
+
+        {:error, reason, reply["meta"]}
+
+      _ ->
+        {:error, :pi_failed}
     end
   rescue
     _ -> {:error, :pi_failed}

@@ -66,6 +66,30 @@ defmodule Olympus.RepairAdapter do
   end
 end
 
+defmodule Olympus.MeteredHangAdapter do
+  @behaviour Olympus.Adapter
+  def respond(_, _),
+    do: {:ok, %{"artifact" => %{"files" => %{"main.py" => "while True: pass\n"}}}}
+
+  def respond_with_usage(req, opts) do
+    {:ok, body} = respond(req, opts)
+
+    {:ok, body,
+     %{
+       "provider" => "fixture",
+       "model" => "test",
+       "usage_format" => "pi-sdk",
+       "usage" => %{
+         "input" => 11,
+         "output" => 7,
+         "cacheRead" => 0,
+         "cacheWrite" => 0,
+         "totalTokens" => 18
+       }
+     }}
+  end
+end
+
 defmodule Olympus.CodingRepairTest do
   use ExUnit.Case
   @moduletag :container
@@ -277,6 +301,30 @@ defmodule Olympus.CodingRepairTest do
     assert Enum.all?(hd(result.rounds).candidates, fn c ->
              length(c.attempts) == 1 and hd(c.attempts)["status"] == "evaluation_failed"
            end)
+  end
+
+  test "completed model usage survives an evaluator timeout", ctx do
+    fate =
+      start_supervised!(
+        {Olympus.Fate,
+         [
+           journal: Path.join(ctx.root, "journal"),
+           coding: ctx.coding,
+           contenders: ~w(athena ares),
+           adapter: Olympus.MeteredHangAdapter
+         ]}
+      )
+
+    {:ok, result} = Olympus.pray(fate, Map.put(prayer(), "timeout_ms", 1500))
+    assert result.status == :cut
+
+    assert Enum.all?(hd(result.rounds).candidates, fn c ->
+             hd(c.attempts)["call"]["usage"]["output"] == 7
+           end)
+
+    summary = Olympus.Usage.summarize(result)
+    assert summary["usage_known_calls"] == 2
+    assert summary["reported_usage_subtotal"]["totalTokens"] == 36
   end
 
   test "attempt limit is sealed and rejects out-of-range values", ctx do

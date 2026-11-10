@@ -332,8 +332,19 @@ defmodule Olympus.Fate do
             _ -> []
           end
 
-        {Map.merge(assessment, %{god: god, artifact: artifact, review: nil, attempts: attempts}),
-         acc}
+        call =
+          case response do
+            {:ok, body} when state.coding == nil -> Map.get(body, "_olympus_call")
+            _ -> nil
+          end
+
+        {Map.merge(assessment, %{
+           god: god,
+           artifact: artifact,
+           review: nil,
+           attempts: attempts,
+           call: call
+         }), acc}
       end)
 
     {outcomes, acc}
@@ -373,7 +384,13 @@ defmodule Olympus.Fate do
           do: acc.relationships,
           else: Map.update(acc.relationships, key, -1, &max(&1 - 1, -100))
 
-      review = %{reviewer: enemy, alleged: objections, verified: verified}
+      call =
+        case response do
+          {:ok, body} -> Map.get(body, "_olympus_call")
+          _ -> nil
+        end
+
+      review = %{reviewer: enemy, alleged: objections, verified: verified, call: call}
       {%{candidate | review: review}, %{acc | relationships: weights}}
     end)
   end
@@ -467,7 +484,15 @@ defmodule Olympus.Fate do
                 send(owner, {tag, :coding_progress, snapshot})
               end)
             else
-              adapter.respond(request, opts) |> validate_response(request.max_bytes)
+              {response, call} = Olympus.Adapter.invoke(adapter, request, opts)
+
+              body =
+                case validate_response(response, request.max_bytes) do
+                  {:ok, value} when is_map(value) -> value
+                  _ -> %{}
+                end
+
+              {:ok, Map.put(body, "_olympus_call", call)}
             end
           after
             Process.exit(watcher, :kill)

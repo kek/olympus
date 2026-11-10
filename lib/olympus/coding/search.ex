@@ -50,7 +50,9 @@ defmodule Olympus.Coding.Search do
             |> Map.put("_olympus_inflight", %{"attempt" => index, "budget" => budget})
           )
 
-          {decision, next} = step(adapter, opts, req, profile, contract, deadline, state, index)
+          {decision, next} =
+            step(adapter, opts, req, profile, contract, deadline, state, index, progress)
+
           progress.(snapshot(next))
           {decision, next}
         end
@@ -85,8 +87,19 @@ defmodule Olympus.Coding.Search do
     |> Map.put("_olympus_terminal", terminal)
   end
 
-  defp step(adapter, opts, request, profile, contract, deadline, state, index) do
-    with {:ok, body} <- propose(adapter, opts, request),
+  defp step(adapter, opts, request, profile, contract, deadline, state, index, progress) do
+    {proposal, call} = propose(adapter, opts, request)
+
+    progress.(
+      snapshot(state)
+      |> Map.put("_olympus_inflight", %{
+        "attempt" => index,
+        "budget" => request.budget,
+        "call" => call
+      })
+    )
+
+    with {:ok, body} <- proposal,
          %{"artifact" => artifact} <- body,
          artifact <- accumulate(artifact, state.changes),
          {:ok, measured} <- Coding.evaluate(profile, artifact, deadline - now()),
@@ -123,6 +136,7 @@ defmodule Olympus.Coding.Search do
       record = %{
         "attempt" => index,
         "budget" => request.budget,
+        "call" => call,
         "status" => status,
         "artifact" => measured,
         "oaths" => oaths
@@ -149,38 +163,40 @@ defmodule Olympus.Coding.Search do
           state,
           index,
           request.budget,
-          if(invalid_patch, do: "invalid_patch", else: "evaluation_failed")
+          if(invalid_patch, do: "invalid_patch", else: "evaluation_failed"),
+          call
         )
 
       {:error, :response_budget} ->
-        failed(state, index, request.budget, "response_budget")
+        failed(state, index, request.budget, "response_budget", call)
 
       {:error, :invalid_response} ->
-        failed(state, index, request.budget, "invalid_response")
+        failed(state, index, request.budget, "invalid_response", call)
 
       {:error, _} ->
-        failed(state, index, request.budget, "adapter_or_evaluation_failed")
+        failed(state, index, request.budget, "adapter_or_evaluation_failed", call)
 
       false ->
-        failed(state, index, request.budget, "response_budget")
+        failed(state, index, request.budget, "response_budget", call)
 
       _ ->
-        failed(state, index, request.budget, "invalid_patch")
+        failed(state, index, request.budget, "invalid_patch", call)
     end
   end
 
   defp propose(adapter, opts, request) do
-    case adapter.respond(request, opts) do
-      {:ok, body} when is_map(body) ->
-        if bounded?(body, request.max_bytes), do: {:ok, body}, else: {:error, :response_budget}
+    {response, call} = Olympus.Adapter.invoke(adapter, request, opts)
 
-      _ ->
-        {:error, :invalid_response}
-    end
-  rescue
-    _ -> {:error, :adapter_failed}
-  catch
-    _, _ -> {:error, :adapter_failed}
+    proposal =
+      case response do
+        {:ok, body} when is_map(body) ->
+          if bounded?(body, request.max_bytes), do: {:ok, body}, else: {:error, :response_budget}
+
+        _ ->
+          {:error, :invalid_response}
+      end
+
+    {proposal, call}
   end
 
   defp accumulate(%{"files" => edits} = artifact, previous)
@@ -189,8 +205,8 @@ defmodule Olympus.Coding.Search do
 
   defp accumulate(artifact, _), do: artifact
 
-  defp failed(state, index, budget, status) do
-    record = %{"attempt" => index, "budget" => budget, "status" => status}
+  defp failed(state, index, budget, status, call) do
+    record = %{"attempt" => index, "budget" => budget, "status" => status, "call" => call}
     {:halt, %{state | trace: state.trace ++ [record], feedback: %{"status" => status}}}
   end
 
