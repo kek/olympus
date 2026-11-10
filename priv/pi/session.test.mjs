@@ -189,6 +189,7 @@ test("full Fate/Pi coding tournament returns an independently verified patch", {
       coding: [repository: Path.join(root, "source"), revision: "@",
         fixtures: Path.join(root, "cases.json"),
         image: System.get_env("OLYMPUS_TEST_IMAGE", "docker.io/library/python:3.12-alpine"),
+        engine: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman"),
         command: ["python3", "-I", "-B", "/candidate/main.py"], editable: ["main.py"]])
     {:ok, result} = Olympus.pray(realm, %{
       "id" => "pi-coding", "request" => "Read whitespace-separated integers and print their sum.",

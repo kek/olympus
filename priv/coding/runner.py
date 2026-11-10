@@ -69,7 +69,7 @@ def git(repo, *args):
 
 
 def prepare(config):
-    allowed = {"repository", "revision", "fixtures", "image", "command", "editable", "source_files", "case_timeout_ms", "owner"}
+    allowed = {"repository", "revision", "fixtures", "image", "command", "editable", "source_files", "case_timeout_ms", "owner", "engine"}
     require(isinstance(config, dict) and set(config) <= allowed, "invalid_profile")
     repo = str(Path(config["repository"]).resolve(strict=True))
     revision = config["revision"]
@@ -127,7 +127,10 @@ def prepare(config):
     require(type(case_timeout) is int and 100 <= case_timeout <= 10000, "invalid_case_timeout")
     image = config["image"]
     require(isinstance(image, str) and len(image) <= 256 and not image.startswith("-"), "invalid_image")
-    info = json.loads(command(["podman", "image", "inspect", image]))
+    engine = config.get("engine", "podman")
+    require(engine in ("podman", "docker"), "invalid_engine")
+    info = json.loads(command([engine, "image", "inspect", image]))
+    require(info[0]["Os"] == "linux", "linux_image_required")
     image_id = info[0]["Id"]
     if re.fullmatch(r"[0-9a-f]{64}", image_id):
         image_id = "sha256:" + image_id
@@ -136,9 +139,9 @@ def prepare(config):
     require(re.fullmatch(r"[0-9a-f]{64}", owner) is not None, "invalid_owner")
     root = Path(tempfile.gettempdir()) / ("olympus-workspaces-" + str(os.getuid()) + "-" + owner)
     # One live Fate per journal owns this label. Restart reaps unfinished execution.
-    orphaned = command(["podman", "ps", "--all", "--quiet", "--filter", "label=olympus.owner=" + owner]).decode().split()
+    orphaned = command([engine, "ps", "--all", "--quiet", "--filter", "label=olympus.owner=" + owner]).decode().split()
     if orphaned:
-        command(["podman", "rm", "--force", "--time", "0", *orphaned])
+        command(removal_command(engine, orphaned))
     if root.exists():
         require(not root.is_symlink(), "invalid_workspace_root")
         shutil.rmtree(root)
@@ -147,6 +150,7 @@ def prepare(config):
         "evaluator_version": VERSION, "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "base_revision": commit,
         "source_sha256": digest({"files": files, "modes": modes}), "fixtures_sha256": digest(cases),
         "image": image_id, "platform": info[0]["Os"] + "/" + info[0]["Architecture"],
+        "engine": engine, "expiry": "engine-timeout" if engine == "podman" else "external-watchdog",
         "command": argv, "workdir": "/candidate",
         "environment": {"LANG": "C.UTF-8", "TZ": "UTC", "PYTHONDONTWRITEBYTECODE": "1"},
         "editable": sorted(editable), "case_count": len(cases),
@@ -208,14 +212,34 @@ def make_patch(base, edits):
     return "".join(chunks)
 
 
-def cleanup(name, proc):
+def removal_command(engine, ids):
+    return [engine, "rm", "--force", *(["--time", "0"] if engine == "podman" else []), *ids]
+
+
+def watchdog(engine, container_id, deadline):
+    # Independent host process: candidate code and controller death cannot stop this timer.
+    require(engine == "docker" and re.fullmatch(r"[0-9a-f]{64}", container_id), "invalid_watchdog")
+    time.sleep(max(deadline - time.monotonic(), 0))
+    for attempt in range(3):
+        try:
+            subprocess.run(removal_command(engine, [container_id]), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                return
+
+
+def cleanup(engine, name, proc, timer):
     # Stop an attached CLI before removing: a flood can otherwise block removal on its full pipes.
     if proc.poll() is None:
         os.killpg(proc.pid, signal.SIGKILL)
     proc.wait(timeout=2)
-    # Container lifetime also has an engine-enforced timeout if this controller dies.
-    subprocess.run(["podman", "rm", "--force", "--time", "0", name],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    removed = subprocess.run(removal_command(engine, [name]),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    if timer is not None and removed.returncode == 0 and timer.poll() is None:
+        timer.terminate()
+        timer.wait(timeout=1)
 
 
 def run_case(directory, manifest, case, deadline, owner):
@@ -224,16 +248,28 @@ def run_case(directory, manifest, case, deadline, owner):
     require(available > 0 and not CANCELLED.is_set(), "evaluation_timeout")
     end = time.monotonic() + available
     argv = manifest["command"]
-    args = ["podman", "run", "--rm", "--pull=never", "--name", name,
-            "--label", "olympus.evaluator=1", "--label", "olympus.owner=" + owner, "--timeout", str(max(1, math.ceil(available))),
-            "--network=none", "--read-only", "--read-only-tmpfs=false", "--cap-drop=ALL",
+    engine = manifest["engine"]
+    lifetime = ["--timeout", str(max(1, math.ceil(available))), "--read-only-tmpfs=false", "--pid=private"] if engine == "podman" else []
+    args = [engine, "run" if engine == "podman" else "create", "--rm", "--pull=never", "--name", name,
+            "--label", "olympus.evaluator=1", "--label", "olympus.owner=" + owner, *lifetime,
+            "--network=none", "--read-only", "--cap-drop=ALL",
             "--security-opt=no-new-privileges", "--user=65534:65534", "--cpus=1",
             "--memory=256m", "--memory-swap=256m", "--pids-limit=64", "--ulimit=nofile=64:64",
-            "--ipc=private", "--pid=private", "--log-driver=none", "--workdir=/candidate",
+            "--ipc=private", "--log-driver=none", "--workdir=/candidate",
             "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777",
             "--mount", "type=bind,src=" + directory + ",dst=/candidate,ro",
             "--env=LANG=C.UTF-8", "--env=TZ=UTC", "--env=PYTHONDONTWRITEBYTECODE=1",
             "--entrypoint", argv[0], "--interactive", manifest["image"], *argv[1:]]
+    timer = None
+    if engine == "docker":
+        # Creation does not execute candidate code. Arm expiry for the immutable ID before start.
+        container_id = command(args, timeout=max(end - time.monotonic(), 0.001)).decode().strip()
+        require(re.fullmatch(r"[0-9a-f]{64}", container_id) is not None, "invalid_container_id")
+        timer = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).resolve()),
+                                  "--watchdog", engine, container_id, str(end)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        args = [engine, "start", "--attach", "--interactive", container_id]
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=True)
     out, err = bytearray(), bytearray()
@@ -266,7 +302,7 @@ def run_case(directory, manifest, case, deadline, owner):
         if exit_code == 255 or exit_code == 137:
             reason = "killed_or_timeout"
     finally:
-        cleanup(name, proc)
+        cleanup(engine, name, proc, timer)
         proc.stdout.close()
         proc.stderr.close()
     passed = reason == "completed" and exit_code == case["exit_code"] and out == case["stdout"].encode("utf-8")
@@ -343,7 +379,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if len(sys.argv) == 5 and sys.argv[1] == "--watchdog":
+            watchdog(sys.argv[2], sys.argv[3], float(sys.argv[4]))
+        else:
+            main()
     except Invalid as error:
         print(json.dumps({"ok": False, "error": str(error)}), flush=True)
     except Exception:

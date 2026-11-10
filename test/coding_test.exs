@@ -52,6 +52,7 @@ defmodule Olympus.CodingTest do
       revision: "@",
       fixtures: fixtures,
       image: System.get_env("OLYMPUS_TEST_IMAGE", "docker.io/library/python:3.12-alpine"),
+      engine: engine(),
       command: ["python3", "-I", "-B", "/candidate/main.py"],
       editable: ["main.py"],
       case_timeout_ms: 1000
@@ -201,9 +202,11 @@ defmodule Olympus.CodingTest do
         )
   end
 
+  defp engine, do: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman")
+
   defp containers(owner) do
     {out, 0} =
-      System.cmd("podman", ["ps", "--all", "--quiet", "--filter", "label=olympus.owner=" <> owner])
+      System.cmd(engine(), ["ps", "--all", "--quiet", "--filter", "label=olympus.owner=" <> owner])
 
     String.trim(out)
   end
@@ -232,15 +235,13 @@ defmodule Olympus.CodingTest do
     File.write!(Path.join(profile["workspace_root"], "stale"), "unfinished")
 
     {id, 0} =
-      System.cmd("podman", [
+      System.cmd(engine(), [
         "run",
         "--detach",
         "--rm",
         "--network=none",
         "--label",
         "olympus.owner=" <> profile["owner"],
-        "--timeout",
-        "10",
         "--entrypoint",
         "python3",
         profile["manifest"]["image"],
@@ -249,7 +250,7 @@ defmodule Olympus.CodingTest do
       ])
 
     on_exit(fn ->
-      System.cmd("podman", ["rm", "--force", String.trim(id)], stderr_to_stdout: true)
+      System.cmd(engine(), ["rm", "--force", String.trim(id)], stderr_to_stdout: true)
     end)
 
     assert containers(profile["owner"]) != ""

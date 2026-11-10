@@ -55,6 +55,7 @@ File.write!(
       revision: "@",
       fixtures: fixtures,
       image: System.get_env("OLYMPUS_EVALUATOR_IMAGE", "docker.io/library/python:3.12-alpine"),
+      engine: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman"),
       command: ["python3", "-I", "-B", "/candidate/main.py"],
       editable: ["main.py"],
       case_timeout_ms: 3000
