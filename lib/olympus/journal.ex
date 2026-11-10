@@ -28,7 +28,8 @@ defmodule Olympus.Journal do
 
   defp replay(<<size::32, digest::binary-size(32), rest::binary>>, events, previous, seq)
        when size <= @max_frame and byte_size(rest) >= size do
-    <<body::binary-size(size), tail::binary>> = rest
+    body = binary_part(rest, 0, size)
+    tail = binary_part(rest, size, byte_size(rest) - size)
 
     if :crypto.hash(:sha256, previous <> body) == digest do
       event = :erlang.binary_to_term(body, [:safe])
