@@ -1,0 +1,11 @@
+{
+  "name": "olympus-pi-adapter",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": { "test": "node --test" },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.1",
+    "@earendil-works/pi-coding-agent": "1.5.1"
+  }
+}
