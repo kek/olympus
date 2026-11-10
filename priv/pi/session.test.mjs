@@ -165,7 +165,7 @@ test("full Fate/Pi coding tournament returns an independently verified patch", {
     const content = body.messages.at(-1).content;
     const wire = JSON.parse(typeof content === "string" ? content : content.map((part) => part.text || "").join(""));
     if (wire.action === "review") return '{"objections":[]}';
-    const code = wire.god === "ares" ? "print(0)\n" :
+    const code = wire.god === "ares" || !wire.repair ? "print(0)\n" :
       "import sys\nprint(sum(map(int, sys.stdin.read().split())))\n";
     return JSON.stringify({ artifact: { files: { "main.py": code } } });
   } });
@@ -189,7 +189,7 @@ test("full Fate/Pi coding tournament returns an independently verified patch", {
       coding: [repository: Path.join(root, "source"), revision: "@",
         fixtures: Path.join(root, "cases.json"),
         image: System.get_env("OLYMPUS_TEST_IMAGE", "docker.io/library/python:3.12-alpine"),
-        engine: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman"),
+        engine: System.get_env("OLYMPUS_CONTAINER_ENGINE", "podman"), max_attempts: 2,
         command: ["python3", "-I", "-B", "/candidate/main.py"], editable: ["main.py"]])
     {:ok, result} = Olympus.pray(realm, %{
       "id" => "pi-coding", "request" => "Read whitespace-separated integers and print their sum.",
@@ -197,7 +197,8 @@ test("full Fate/Pi coding tournament returns an independently verified patch", {
       "rounds" => 1, "timeout_ms" => 120_000, "tokens" => 24_000, "max_bytes" => 32_768})
     if result.status != :harmonious, do: (IO.inspect(result); System.halt(1))
     IO.puts("CODING_RESULT:" <> IO.iodata_to_binary(Olympus.JSON.encode(
-      %{"winner" => result.winner, "artifact" => result.artifact})))
+      %{"winner" => result.winner, "artifact" => result.artifact,
+        "attempts" => Enum.find(hd(result.rounds).candidates, &(&1.god == result.winner)).attempts})))
   `;
   const child = spawn("mix", ["run", "-e", code], {
     cwd: new URL("../../", import.meta.url).pathname,
@@ -216,7 +217,20 @@ test("full Fate/Pi coding tournament returns an independently verified patch", {
   assert.equal(result.artifact.evaluation.passed, true);
   assert.equal(result.artifact.evaluation.tests_passed, 2);
   assert.ok(result.artifact.patch.includes("print(sum"));
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 6);
+  assert.deepEqual(result.attempts.map((a) => a.status), ["acceptance_failed", "passed"]);
+  assert.equal(result.attempts[0].budget + result.attempts[1].budget, 1000);
+  const repairRequests = calls.map((body) => {
+    const content = body.messages.at(-1).content;
+    return JSON.parse(typeof content === "string" ? content : content.map((part) => part.text || "").join(""));
+  }).filter((wire) => wire.repair);
+  assert.equal(repairRequests.length, 2);
+  for (const wire of repairRequests) {
+    assert.equal(wire.repair.current_files["main.py"], "print(0)\n");
+    assert.equal(wire.repair.feedback.tests_passed, 0);
+    assert.ok(!("cases" in wire.repair.feedback));
+    assert.ok(!JSON.stringify(wire.repair.feedback).includes("stdout_preview"));
+  }
   assert.equal(await fs.readFile(path.join(repository, "main.py"), "utf8"), "print('broken')\n");
 });
 

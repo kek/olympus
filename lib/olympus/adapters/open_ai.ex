@@ -19,7 +19,7 @@ defmodule Olympus.Adapters.OpenAI do
       instruction =
         if action == :propose do
           if Map.get(request, :coding) do
-            "Return only JSON: {\"artifact\":{\"files\":{\"editable/path\":\"complete replacement text\"}}}. Implement the task using coding.files. Edit only coding.editable paths. Never submit evaluation results; independent hidden cases decide acceptance."
+            "Return only JSON: {\"artifact\":{\"files\":{\"editable/path\":\"complete replacement text\"}}}. Implement the task using coding.files. Edit only coding.editable paths. Never submit evaluation results; independent hidden cases decide acceptance. If repair is present, revise repair.current_files using repair.feedback. Prior valid edits are retained; return only paths to change in this step. Honor repair.oaths."
           else
             "Return only a JSON object: {\"artifact\": <your candidate>}. Compete to satisfy the sealed checks and optimize the objective."
           end
@@ -98,7 +98,8 @@ defmodule Olympus.Adapters.OpenAI do
       "contract" => request.contract,
       "artifact" => Map.get(request, :artifact),
       "opponents" => request.opponents,
-      "coding" => Map.get(request, :coding)
+      "coding" => Map.get(request, :coding),
+      "repair" => Map.get(request, :repair)
     }
   end
 
